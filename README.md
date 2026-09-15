@@ -8,3 +8,6 @@ Copy and paste the file contents into files in google apps scripts
 Deploy as web app (unless otherwise directed)
 
 Profit :D
+
+Games Statuses:
+Undertale: Bugged
