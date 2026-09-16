@@ -10,6 +10,7 @@ Deploy as web app (unless otherwise directed)
 Profit :D
 
 Games Statuses:
+
 Undertale: Bugged
 
 Idk when this is gonna be updated next
