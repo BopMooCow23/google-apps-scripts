@@ -1,0 +1,4 @@
+Undertale:
+Status: Bugged
+Bug: Switching tabs increases games speed and does not pause
+Link: WIP
