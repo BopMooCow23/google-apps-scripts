@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="en-us">
   <head>
-    <!-- TIP: replace @main with @<latest commit hash> (e.g. @a1b2c3d) so the CDN can't serve a stale cached index.js -->
     <base href="https://cdn.jsdelivr.net/gh/BopMooCow23/ut-upload-2@main/">
     <meta charset="utf-8" />
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -266,11 +265,7 @@
     </script>
 
     <script>
-      // ---- Pause the game while the tab is hidden ----
-      // Browsers throttle/stop animation frames in background tabs, but the clock keeps
-      // running, so the game "catches up" on return and appears to speed up.
-      // Fix: freeze the clock the game sees while hidden. This must run BEFORE runner.js.
-      var USE_CLOCK_FREEZE = true; // freezes the clock the game sees while the tab is hidden (set false to disable)
+      var USE_CLOCK_FREEZE = true;
       (function () {
         if (!USE_CLOCK_FREEZE) return;
         var realPerfNow = performance.now.bind(performance);
@@ -287,19 +282,18 @@
           return t - dateOffset;
         };
 
-        // requestAnimationFrame passes its own timestamp, so shift that too.
         var realRAF = window.requestAnimationFrame.bind(window);
         window.requestAnimationFrame = function (cb) {
           return realRAF(function (ts) {
-            // While the clock is held (tab hidden, or pause menu showing) give the game a constant timestamp.
+
             cb(hiddenPerfAt !== null ? hiddenPerfAt - perfOffset : ts - perfOffset);
           });
         };
 
-        // Track audio contexts so sound pauses along with the game.
+
         var audioContexts = [];
         try {
-          var USE_AUDIO_HOOK = false; // runner.js already suspends/resumes its own audio on visibility change
+          var USE_AUDIO_HOOK = false; 
           var BaseAC = window.AudioContext || window.webkitAudioContext;
           if (BaseAC && USE_AUDIO_HOOK) {
             var TrackedAC = function () {
@@ -313,8 +307,6 @@
           }
         } catch (e) { console.warn("Audio tracking unavailable:", e); }
 
-        // The clock is frozen while ANY hold is active: "hidden" (tab in background) or
-        // "menu" (pause menu showing, set by the pause-menu fix below).
         var holds = { hidden: false, menu: false };
         function updateClock() {
           var anyHold = holds.hidden || holds.menu;
@@ -342,10 +334,6 @@
     </script>
 
     <script>
-      // ---- Collapse duplicate animation-frame loops ----
-      // Theory: while the tab is hidden, the game's pending frame callback stays queued; when
-      // GM_unpause() starts the loop again, there are TWO loops running => double speed.
-      // This lets only one pending request per callback function exist at a time.
       var USE_RAF_DEDUPE = true;
       (function () {
         var realRAF = window.requestAnimationFrame.bind(window);
@@ -355,9 +343,6 @@
         var stats = { dup: 0, calls: 0, frames: 0, lastTs: -1, killed: 0, cbs: new Set() };
         window.__rafStats = stats;
 
-        // runner.js starts its main loop with emscripten_request_animation_frame_loop, which creates
-        // a NEW closure every time it is called, so identity-based de-duplication can't see a second
-        // loop. Recognise those closures by their source text instead (newest loop wins).
         var loopCache = new WeakMap();
         function isRunnerLoop(cb) {
           if (typeof cb !== "function") return false;
@@ -408,13 +393,8 @@
     </script>
 
     <script>
-      // ---- Keep the pause menu up when you come back to the tab ----
-      // index.js pauses when the tab is hidden but ALSO un-pauses the instant it becomes visible,
-      // so the menu is hidden again before you ever see it. Here we ignore that automatic resume;
-      // the game stays paused (menu showing) until Resume is clicked.
       (function () {
         var inVisibilityDispatch = false;
-        // Registered before index.js loads, so it runs before index.js's own listener.
         document.addEventListener("visibilitychange", function () {
           if (document.visibilityState === "visible") {
             inVisibilityDispatch = true;
@@ -433,7 +413,7 @@
           var menuUp = false;
 
           window.pause = function () {
-            if (menuUp) return; // already paused
+            if (menuUp) return;
             var result = origPause.apply(this, arguments);
             var menu = document.getElementById("pauseMenuContainer");
             if (menu && !menu.hidden) {
@@ -448,7 +428,7 @@
               if (window.dbg) dbg("auto-resume skipped (menu stays up)");
               return;
             }
-            if (!menuUp) return; // not paused (also stops a double GM_unpause from one click)
+            if (!menuUp) return;
             menuUp = false;
             if (window.__clockHold) window.__clockHold("menu", false);
             return origResume.apply(this, arguments);
@@ -458,7 +438,6 @@
     </script>
 
     <script>
-      // ---- Helpers for showing status / errors on the loading screen ----
       function setStatus(text, isError) {
         var el = document.getElementById("status");
         if (!el) return;
@@ -470,7 +449,7 @@
         }
       }
 
-      // Surface otherwise-silent errors so the page never just hangs on "loading".
+  
       window.addEventListener("error", function (e) {
         console.error("Page error:", e.message || e);
       });
@@ -478,7 +457,7 @@
         console.error("Unhandled promise rejection:", e.reason);
       });
 
-      // ---- Tick worker (wrapped so a failure here can't break loading) ----
+
       var worker = null;
       try {
         var tickEl = document.querySelector("#tick-worker");
@@ -507,8 +486,7 @@
     </script>
 
     <script>
-      // ---- On-screen debug log (no DevTools needed). Set to false when done. ----
-      var DEBUG_OVERLAY = true;
+      var DEBUG_OVERLAY = false;
       (function () {
         if (!DEBUG_OVERLAY) return;
         var box = document.createElement("div");
@@ -525,7 +503,7 @@
           render();
         };
 
-        // Live line: frame callbacks per second, and how many duplicate requests were blocked.
+
         var lastCalls = 0, lastFrames = 0, lastReal = Date.now();
         setInterval(function () {
           var s = window.__rafStats;
@@ -581,7 +559,6 @@
     </script>
 
     <script>
-      // ---- Download game.unx in parts, merge, and hand it to the runner ----
       function mergeFiles(fileParts) {
         return new Promise(function (resolve, reject) {
           var buffers = [];
@@ -589,7 +566,7 @@
           function fetchPart(index) {
             if (index >= fileParts.length) {
               var mergedBlob = new Blob(buffers);
-              buffers = null; // allow the parts to be garbage collected
+              buffers = null; 
               resolve(URL.createObjectURL(mergedBlob));
               return;
             }
@@ -598,7 +575,6 @@
 
             fetch(fileParts[index])
               .then(function (response) {
-                // FIX: a 404/blocked response used to be treated as file data.
                 if (!response.ok) {
                   throw new Error("HTTP " + response.status + " for " + fileParts[index]);
                 }
@@ -623,7 +599,7 @@
         return parts;
       }
 
-      // FIX: load scripts strictly in order and report failures.
+
       function loadScript(src) {
         return new Promise(function (resolve, reject) {
           var s = document.createElement("script");
