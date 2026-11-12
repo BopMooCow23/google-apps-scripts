@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en-us">
   <head>
+    <!-- TIP: replace @main with @<latest commit hash> (e.g. @a1b2c3d) so the CDN can't serve a stale cached index.js -->
     <base href="https://cdn.jsdelivr.net/gh/BopMooCow23/ut-upload-2@main/">
     <meta charset="utf-8" />
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -265,6 +266,198 @@
     </script>
 
     <script>
+      // ---- Pause the game while the tab is hidden ----
+      // Browsers throttle/stop animation frames in background tabs, but the clock keeps
+      // running, so the game "catches up" on return and appears to speed up.
+      // Fix: freeze the clock the game sees while hidden. This must run BEFORE runner.js.
+      var USE_CLOCK_FREEZE = true; // freezes the clock the game sees while the tab is hidden (set false to disable)
+      (function () {
+        if (!USE_CLOCK_FREEZE) return;
+        var realPerfNow = performance.now.bind(performance);
+        var realDateNow = Date.now.bind(Date);
+        var hiddenPerfAt = null, hiddenDateAt = null;
+        var perfOffset = 0, dateOffset = 0;
+
+        performance.now = function () {
+          var t = hiddenPerfAt !== null ? hiddenPerfAt : realPerfNow();
+          return t - perfOffset;
+        };
+        Date.now = function () {
+          var t = hiddenDateAt !== null ? hiddenDateAt : realDateNow();
+          return t - dateOffset;
+        };
+
+        // requestAnimationFrame passes its own timestamp, so shift that too.
+        var realRAF = window.requestAnimationFrame.bind(window);
+        window.requestAnimationFrame = function (cb) {
+          return realRAF(function (ts) {
+            // While the clock is held (tab hidden, or pause menu showing) give the game a constant timestamp.
+            cb(hiddenPerfAt !== null ? hiddenPerfAt - perfOffset : ts - perfOffset);
+          });
+        };
+
+        // Track audio contexts so sound pauses along with the game.
+        var audioContexts = [];
+        try {
+          var USE_AUDIO_HOOK = false; // runner.js already suspends/resumes its own audio on visibility change
+          var BaseAC = window.AudioContext || window.webkitAudioContext;
+          if (BaseAC && USE_AUDIO_HOOK) {
+            var TrackedAC = function () {
+              var ctx = new (Function.prototype.bind.apply(BaseAC, [null].concat([].slice.call(arguments))))();
+              audioContexts.push(ctx);
+              return ctx;
+            };
+            TrackedAC.prototype = BaseAC.prototype;
+            window.AudioContext = TrackedAC;
+            if (window.webkitAudioContext) window.webkitAudioContext = TrackedAC;
+          }
+        } catch (e) { console.warn("Audio tracking unavailable:", e); }
+
+        // The clock is frozen while ANY hold is active: "hidden" (tab in background) or
+        // "menu" (pause menu showing, set by the pause-menu fix below).
+        var holds = { hidden: false, menu: false };
+        function updateClock() {
+          var anyHold = holds.hidden || holds.menu;
+          if (anyHold && hiddenPerfAt === null) {
+            hiddenPerfAt = realPerfNow();
+            hiddenDateAt = realDateNow();
+          } else if (!anyHold && hiddenPerfAt !== null) {
+            perfOffset += realPerfNow() - hiddenPerfAt;
+            dateOffset += realDateNow() - hiddenDateAt;
+            hiddenPerfAt = null;
+            hiddenDateAt = null;
+          }
+        }
+        window.__clockHold = function (reason, on) {
+          holds[reason] = !!on;
+          updateClock();
+        };
+
+        document.addEventListener("visibilitychange", function () {
+          var hidden = document.visibilityState === "hidden";
+          window.__clockHold("hidden", hidden);
+          audioContexts.forEach(function (c) { try { hidden ? c.suspend() : c.resume(); } catch (e) {} });
+        });
+      })();
+    </script>
+
+    <script>
+      // ---- Collapse duplicate animation-frame loops ----
+      // Theory: while the tab is hidden, the game's pending frame callback stays queued; when
+      // GM_unpause() starts the loop again, there are TWO loops running => double speed.
+      // This lets only one pending request per callback function exist at a time.
+      var USE_RAF_DEDUPE = true;
+      (function () {
+        var realRAF = window.requestAnimationFrame.bind(window);
+        var realCancel = window.cancelAnimationFrame.bind(window);
+        var pendingByCb = new Map();
+        var cbById = new Map();
+        var stats = { dup: 0, calls: 0, frames: 0, lastTs: -1, killed: 0, cbs: new Set() };
+        window.__rafStats = stats;
+
+        // runner.js starts its main loop with emscripten_request_animation_frame_loop, which creates
+        // a NEW closure every time it is called, so identity-based de-duplication can't see a second
+        // loop. Recognise those closures by their source text instead (newest loop wins).
+        var loopCache = new WeakMap();
+        function isRunnerLoop(cb) {
+          if (typeof cb !== "function") return false;
+          var known = loopCache.get(cb);
+          if (known !== undefined) return known;
+          var result = false;
+          try {
+            result = Function.prototype.toString.call(cb).indexOf("M(a)(d,b)&&requestAnimationFrame(c)") !== -1;
+          } catch (e) {}
+          loopCache.set(cb, result);
+          return result;
+        }
+
+        window.requestAnimationFrame = function (cb) {
+          if (USE_RAF_DEDUPE && pendingByCb.has(cb)) {
+            stats.dup++;
+            return pendingByCb.get(cb);
+          }
+          if (USE_RAF_DEDUPE && isRunnerLoop(cb)) {
+            pendingByCb.forEach(function (otherId, other) {
+              if (other !== cb && isRunnerLoop(other)) {
+                realCancel(otherId);
+                pendingByCb.delete(other);
+                cbById.delete(otherId);
+                stats.killed++;
+              }
+            });
+          }
+          var id = realRAF(function (ts) {
+            pendingByCb.delete(cb);
+            cbById.delete(id);
+            stats.calls++;
+            if (ts !== stats.lastTs) { stats.lastTs = ts; stats.frames++; }
+            stats.cbs.add(cb);
+            cb(ts);
+          });
+          pendingByCb.set(cb, id);
+          cbById.set(id, cb);
+          return id;
+        };
+
+        window.cancelAnimationFrame = function (id) {
+          var cb = cbById.get(id);
+          if (cb) { pendingByCb.delete(cb); cbById.delete(id); }
+          realCancel(id);
+        };
+      })();
+    </script>
+
+    <script>
+      // ---- Keep the pause menu up when you come back to the tab ----
+      // index.js pauses when the tab is hidden but ALSO un-pauses the instant it becomes visible,
+      // so the menu is hidden again before you ever see it. Here we ignore that automatic resume;
+      // the game stays paused (menu showing) until Resume is clicked.
+      (function () {
+        var inVisibilityDispatch = false;
+        // Registered before index.js loads, so it runs before index.js's own listener.
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState === "visible") {
+            inVisibilityDispatch = true;
+            setTimeout(function () { inVisibilityDispatch = false; }, 0);
+          }
+        });
+
+        window.installPauseMenuFix = function () {
+          var origPause = window.pause;
+          var origResume = window.resume;
+          if (typeof origPause !== "function" || typeof origResume !== "function") {
+            if (window.dbg) dbg("PAUSE-MENU FIX NOT INSTALLED: pause()/resume() not found");
+            return;
+          }
+          if (window.dbg) dbg("pause-menu fix v2 installed");
+          var menuUp = false;
+
+          window.pause = function () {
+            if (menuUp) return; // already paused
+            var result = origPause.apply(this, arguments);
+            var menu = document.getElementById("pauseMenuContainer");
+            if (menu && !menu.hidden) {
+              menuUp = true;
+              if (window.__clockHold) window.__clockHold("menu", true);
+            }
+            return result;
+          };
+
+          window.resume = function () {
+            if (inVisibilityDispatch) {
+              if (window.dbg) dbg("auto-resume skipped (menu stays up)");
+              return;
+            }
+            if (!menuUp) return; // not paused (also stops a double GM_unpause from one click)
+            menuUp = false;
+            if (window.__clockHold) window.__clockHold("menu", false);
+            return origResume.apply(this, arguments);
+          };
+        };
+      })();
+    </script>
+
+    <script>
       // ---- Helpers for showing status / errors on the loading screen ----
       function setStatus(text, isError) {
         var el = document.getElementById("status");
@@ -311,6 +504,80 @@
           worker.postMessage({ run: false });
         }
       });
+    </script>
+
+    <script>
+      // ---- On-screen debug log (no DevTools needed). Set to false when done. ----
+      var DEBUG_OVERLAY = true;
+      (function () {
+        if (!DEBUG_OVERLAY) return;
+        var box = document.createElement("div");
+        box.style.cssText = "position:fixed;left:4px;bottom:4px;z-index:99999;max-width:92vw;" +
+          "background:rgba(0,0,0,.75);color:#0f0;font:11px monospace;padding:4px;" +
+          "pointer-events:none;white-space:pre-wrap";
+        document.body.appendChild(box);
+        var lines = [];
+        var statLine = "";
+        function render() { box.textContent = statLine + "\n" + lines.join("\n"); }
+        window.dbg = function (msg) {
+          lines.push((performance.now() / 1000).toFixed(1) + "s  " + msg);
+          if (lines.length > 12) lines.shift();
+          render();
+        };
+
+        // Live line: frame callbacks per second, and how many duplicate requests were blocked.
+        var lastCalls = 0, lastFrames = 0, lastReal = Date.now();
+        setInterval(function () {
+          var s = window.__rafStats;
+          if (!s) return;
+          var now = Date.now();
+          var secs = Math.max(1, now - lastReal) / 1000;
+          var cbRate = Math.round((s.calls - lastCalls) / secs);
+          var frameRate = Math.round((s.frames - lastFrames) / secs);
+          lastCalls = s.calls; lastFrames = s.frames; lastReal = now;
+          statLine = "callbacks/s: " + cbRate + "  real frames/s: " + frameRate +
+                     "  stale loops killed: " + s.killed + "  dupes blocked: " + s.dup;
+          s.cbs.clear();
+          render();
+        }, 1000);
+
+        var hiddenAt = null;
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState === "hidden") {
+            hiddenAt = performance.now();
+            dbg("BEFORE LEAVING: " + statLine);
+            dbg("TAB HIDDEN");
+          } else {
+            var gap = hiddenAt === null ? "?" : ((performance.now() - hiddenAt) / 1000).toFixed(1);
+            dbg("TAB VISIBLE (was away " + gap + "s)");
+            setTimeout(function () { dbg("3s AFTER RETURN: " + statLine); }, 3000);
+          }
+        });
+
+        function wrap(name) {
+          var f = window[name];
+          if (typeof f !== "function" || f.__wrapped) return false;
+          var w = function () { dbg(name + "() called"); return f.apply(this, arguments); };
+          w.__wrapped = true;
+          window[name] = w;
+          return true;
+        }
+
+        window.startDebugHooks = function () {
+          dbg("index.js has gamePaused fix: " + (typeof gamePaused !== "undefined"));
+          wrap("pause");
+          wrap("resume");
+          var tries = 0;
+          var timer = setInterval(function () {
+            wrap("GM_pause");
+            wrap("GM_unpause");
+            var found = window.GM_pause && window.GM_pause.__wrapped &&
+                        window.GM_unpause && window.GM_unpause.__wrapped;
+            if (found) { dbg("hooked GM_pause / GM_unpause"); clearInterval(timer); }
+            else if (++tries > 60) { dbg("GM_pause/GM_unpause not found as globals"); clearInterval(timer); }
+          }, 500);
+        };
+      })();
     </script>
 
     <script>
@@ -395,6 +662,9 @@
 
           return loadScript("index.js").then(function () {
             return loadScript("runner.js");
+          }).then(function () {
+            if (window.installPauseMenuFix) window.installPauseMenuFix();
+            if (window.startDebugHooks) window.startDebugHooks();
           });
         })
         .catch(function (error) {
