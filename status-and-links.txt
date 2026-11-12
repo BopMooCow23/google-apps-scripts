@@ -1,4 +1,3 @@
 Undertale:
-Status: Bugged
-Bug: Switching tabs increases games speed and does not pause
+Status: Working (I think)
 Link: WIP
